@@ -1,0 +1,123 @@
+In [1]:
+import configparser  # 1 
+import oandapy as opy  # 2
+
+config = configparser.ConfigParser()  # 3
+config.read('oanda.cfg')  # 4
+
+oanda = opy.API(environment='practice',
+                access_token=config['oanda']['access_token']
+               In [2]:
+import pandas as pd  # 6
+
+data = oanda.get_history(instrument='EUR_USD',  # our instrument
+                         start='2021-02-07',  # start date
+                         end='2021-02-14',  # end date
+                         granularity='M1')  # minute bars  # 7
+
+df = pd.DataFrame(data['candles']).set_index('time')  # 8
+
+df.index = pd.DatetimeIndex(df.index)  # 9
+
+df.info() # 10
+<class 'pandas.core.frame.DataFrame'>
+DatetimeIndex: 2658 entries, 2021-02-07 00:00:00 to 2021-02-14 21:59:00
+Data columns (total 10 columns):
+closeAsk    2658 non-null float64
+closeBid    2658 non-null float64
+complete    2658 non-null bool
+highAsk     2658 non-null float64
+highBid     2658 non-null float64
+lowAsk      2658 non-null float64
+lowBid      2658 non-null float64
+openAsk     2658 non-null float64
+openBid     2658 non-null float64
+volume      2658 non-null int64
+dtypes: bool(1), float64(8), int64(1)
+memory usage: 210.3 KB
+In [3]:
+import numpy as np  # 11
+
+df['returns'] = np.log(df['closeAsk'] / df['closeAsk'].shift(1))  # 12
+
+cols = []  # 13
+
+for momentum in [15, 30, 60, 120]:  # 14
+    col = 'position_%s' % momentum  # 15
+    df[col] = np.sign(df['returns'].rolling(momentum).mean())  # 16
+    cols.append(col)  # 17
+    In [4]:
+%matplotlib inline
+import seaborn as sns; sns.set()  # 18
+
+strats = ['returns']  # 19
+
+for col in cols:  # 20
+    strat = 'strategy_%s' % col.split('_')[1]  # 21
+    df[strat] = df[col].shift(1) * df['returns']  # 22
+    strats.append(strat)  # 23
+
+df[strats].dropna().cumsum().apply(np.exp).plot #24
+Out[4]:
+<matplotlib.axes._subplots.AxesSubplot at 0x11a9c6a20>
+In [5]:
+class MomentumTrader(opy.Streamer):  # 25
+    def __init__(self, momentum, *args, **kwargs):  # 26
+        opy.Streamer.__init__(self, *args, **kwargs)  # 27
+        self.ticks = 0  # 28
+        self.position = 0  # 29
+        self.df = pd.DataFrame()  # 30
+        self.momentum = momentum  # 31
+        self.units = 100000  # 32
+    def create_order(self, side, units):  # 33
+        order = oanda.create_order(config['oanda']['account_id'], 
+            instrument='EUR_USD', units=units, side=side,
+            type='market')  # 34
+        print('\n', order)  # 35
+    def on_success(self, data):  # 36
+        self.ticks += 1  # 37
+        # print(self.ticks, end=', ')
+        # appends the new tick data to the DataFrame object
+        self.df = self.df.append(pd.DataFrame(data['tick'],
+                                 index=[data['tick']['time']]))  # 38
+        # transforms the time information to a DatetimeIndex object
+        self.df.index = pd.DatetimeIndex(self.df['time'])  # 39
+        # resamples the data set to a new, homogeneous interval
+        dfr = self.df.resample('5s').last()  # 40
+        # calculates the log returns
+        dfr['returns'] = np.log(dfr['ask'] / dfr['ask'].shift(1))  # 41
+        # derives the positioning according to the momentum strategy
+        dfr['position'] = np.sign(dfr['returns'].rolling( 
+                                      self.momentum).mean())  # 42
+        if dfr['position'].ix[-1] == 1:  # 43
+            # go long
+            if self.position == 0:  # 44
+                self.create_order('buy', self.units)  # 45
+            elif self.position == -1:  # 46
+                self.create_order('buy', self.units * 2)  # 47
+            self.position = 1  # 48
+        elif dfr['position'].ix[-1] == -1:  # 49
+            # go short
+            if self.position == 0:  # 50
+                self.create_order('sell', self.units)  # 51
+            elif self.position == 1: # 52
+                self.create_order('sell', self.units * 2)  # 53
+            self.position = -1  # 54
+        if self.ticks == 250:  # 55
+            # close out the position
+            if self.position == 1:  # 56
+                self.create_order('sell', self.units)  # 57
+            elif self.position == -1:  # 58
+                self.create_order('buy', self.units)  # 59
+            self.disconnect()  # 60
+            In [6]:
+mt = MomentumTrader(momentum=12, environment='practice',
+                    access_token=config['oanda']['access_token']
+mt.rates(account_id=config['oanda']['account_id'],
+         instruments=['DE30_EUR'], ignore_heartbeat=True)
+ {'price': 1.04858, 'time': '2021-02-14T10:29:31.000000Z', 'tradeReduced': {}, 'tradesClosed': [], 'tradeOpened': {'takeProfit': 0, 'id': 10564874832, 'trailingStop': 0, 'side': 'buy', 'stopLoss': 0, 'units': 100000}, 'instrument': 'EUR_USD'}
+ {'price': 1.04805, 'time': '2021-02-14T10:29:46.000000Z', 'tradeReduced': {}, 'tradesClosed': [{'side': 'buy', 'id': 10564874832, 'units': 100000}], 'tradeOpened': {'takeProfit': 0, 'id': 10564875194, 'trailingStop': 0, 'side': 'sell', 'stopLoss': 0, 'units': 100000}, 'instrument': 'EUR_USD'}
+ {'price': 1.04827, 'time': '2021-02-14T10:29:46.000000Z', 'tradeReduced': {}, 'tradesClosed': [{'side': 'sell', 'id': 10564875194, 'units': 100000}], 'tradeOpened': {'takeProfit': 0, 'id': 10564875229, 'trailingStop': 0, 'side': 'buy', 'stopLoss': 0, 'units': 100000}, 'instrument': 'EUR_USD'}
+ {'price': 1.04806, 'time': '2021-02-14T10:30:08.000000Z', 'tradeReduced': {}, 'tradesClosed': [{'side': 'buy', 'id': 10564875229, 'units': 100000}], 'tradeOpened': {'takeProfit': 0, 'id': 10564876308, 'trailingStop': 0, 'side': 'sell', 'stopLoss': 0, 'units': 100000}, 'instrument': 'EUR_USD'}
+ {'price': 1.04823, 'time': '2021-02-14T10:30:10.000000Z', 'tradeReduced': {}, 'tradesClosed': [{'side': 'sell', 'id': 10564876308, 'units': 100000}], 'tradeOpened': {'takeProfit': 0, 'id': 10564876466, 'trailingStop': 0, 'side': 'buy', 'stopLoss': 0, 'units': 100000}, 'instrument': 'EUR_USD'}
+ {'price': 1.04809, 'time': '2021-02-14T10:32:27.000000Z', 'tradeReduced': {}, 'tradesClosed': [{'side': 'buy', 'id': 10564876466, 'units': 100000}], 'tradeOpened': {}, 'instrument': 'EUR_USD'}
